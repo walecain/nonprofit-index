@@ -26,7 +26,7 @@ The goal of the of the Oregon Nonprofit index became to take the open informatio
 ## Getting Started and Contributing
 
 This is an open source project and always looking for contributers.  Want to give a hand?  Excellent, here are some ways you can get involved:
-- Open an [issue](https://github.com/walecain/nonprofit-index/issues) using the [issue template]()
+- Open an [issue](https://github.com/walecain/nonprofit-index/issues) using the [issue template](https://github.com/walecain/nonprofit-index/blob/master/issue_template.md)
 - Contribute to the code
 - Contribute your knowledge about a nonprofit local to use
 - Add to the database of nonprofit organizations
