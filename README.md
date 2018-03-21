@@ -1,9 +1,9 @@
-### [Nonprofit Index])https://walecain.github.io/nonprofit-index/)
+### [Nonprofit Index]https://walecain.github.io/nonprofit-index/)
 
 - [What is the Nonprofit Index]() 
 - [Getting Started and Contributing]()
 - [Resources to aid in the project]()
-- [Code of Conduct]
+- [Code of Conduct]()
 - [Open Project Lead(s)]()
 
 Hello, thank you for taking a look at the Nonprofit Index, youre interest is greatly appreciated.  Take a look at the materials below to learn more about the project, why it's important, and ways that you can help.  Thanks for stopping by and I hope to work with you soon!
@@ -26,7 +26,7 @@ The goal of the of the Oregon Nonprofit index became to take the open informatio
 ## Getting Started and Contributing
 
 This is an open source project and always looking for contributers.  Want to give a hand?  Excellent, here are some ways you can get involved:
-- Open an [issue]() using the [issue template]()
+- Open an [issue](https://github.com/walecain/nonprofit-index/issues) using the [issue template]()
 - Contribute to the code
 - Contribute your knowledge about a nonprofit local to use
 - Add to the database of nonprofit organizations
