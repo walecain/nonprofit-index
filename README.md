@@ -1,4 +1,4 @@
-### [Nonprofit Index]https://walecain.github.io/nonprofit-index/)
+### [Nonprofit Index](https://walecain.github.io/nonprofit-index/)
 
 - [What is the Nonprofit Index]() 
 - [Getting Started and Contributing]()
