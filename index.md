@@ -12,4 +12,4 @@ The goal of the of the Oregon Nonprofit index became to take the open informatio
 I am a librarian living and working in the Pacific Northwest with an interst in minority access to data and information, social justice, and pan african transnationalism.
 
 ## Get Involved:
-Please get in contact (via the [gitter](https://gitter.im/nonprofitindex/contact)  if you would like to be involved in building "the index" on any level!
+Please get in contact (via the [gitter](https://gitter.im/nonprofitindex/contact) ) if you would like to be involved in building "the index" on any level!
