@@ -38,7 +38,7 @@ This is an open source project and always looking for contributers.  Want to giv
 - [Beginner's guide to R (Computerworld)](https://www.google.com/search?q=Introduction+to+r&oq=Introduction+to+r&aqs=chrome..69i57j69i60l2j69i61j0l2.3441j0j4&sourceid=chrome&ie=UTF-8)
 - [Introduction to R, RStudio](https://web.stanford.edu/class/stats101/intro/intro-lab01.html)
 ### Learn more about Nonprofits:
-- [Nonprofit organization (Wikipedia eentry)](https://en.wikipedia.org/wiki/Nonprofit_organization)
+- [Nonprofit organization (Wikipedia entry)](https://en.wikipedia.org/wiki/Nonprofit_organization)
 - ["What is a 'Nonprofit'"(National Council of Nonprofits)](https://www.councilofnonprofits.org/what-is-a-nonprofit)
 - [Introduction to the Nonprofit Sector, Nonprofit Organizations...(Coursera)](https://www.coursera.org/learn/nonprofit-organizations)
 
@@ -48,4 +48,4 @@ The Nonprofit Index is committed to creating and supporting an inclusive communi
 
 ## License
 
-The content (resulting data set) is licensed under [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/) the related code used to collect, format, visualize and otherwise deliver that contend is licensed under the [MIT license](https://opensource.org/licenses/mit-license.php)
+The content (resulting data set) is licensed under [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/) the related code used to collect, format, visualize and otherwise deliver that content is licensed under the [MIT license](https://opensource.org/licenses/mit-license.php)
