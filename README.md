@@ -30,7 +30,7 @@ This is an open source project and always looking for contributers.  Want to giv
 - Contribute to the code
 - Contribute your knowledge about a nonprofit local to use
 - Add to the database of nonprofit organizations
-
+ [See here for a more detail explanation on getting started](https://github.com/walecain/nonprofit-index/blob/master/contributing.md)
 ## Resources to help
 
 ### R Resources
