@@ -1,0 +1,1070 @@
+---
+title: "OregonNonprofitDataScript"
+author: "Jonathan Cain"
+date: "4/20/2017"
+output: html_document
+---
+The 2015 merge had results of 8,685 merged organizations out of 24,204 registered organizations. These organizations are likely not active and have not filed with the IRS. They may also have gross income below the $50,000 threshold, which allows them to submit the e-postcard rather than the full Form-990. The 2014 data was used to test the outcome and resulted in a merge of 8,885 organizations of 24,435. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyverse) 
+library(plyr)
+library(tidyr)
+library(splitstackshape)
+
+## packages needed for geocoding and creating the shinyapp
+library(shiny)
+library(leaflet)
+library(rgdal)
+library(maps)
+library(ggmap)
+```
+```{r}
+```
+
+
+## Getting the data
+
+This project is designed to present information about registered oregon based non profits spatially.  This app will enable users to...
+
+## Data Sources
+
+### [Annual Extract of Tax-Exempt Organization Financial Data](https://www.irs.gov/uac/soi-tax-stats-annual-extract-of-tax-exempt-organization-financial-data)
+"These extracts contain selected financial data from filers of three Internal Revenue Service (IRS) information returns — Forms 990, 990-EZ and 990-PF — collected for program administrative purposes. During IRS administrative processing, some adjustments are made which can result in differences between the information as originally reported and the data on this extract." For this data set we will pull from the "990 Extract", "990-EZ Extract", and the "990-PF Extract".
+
+### [Exempt Organizations Business Master File Extract (EO BMF)](https://www.irs.gov/charities-non-profits/exempt-organizations-business-master-file-extract-eo-bmf)
+"The Exempt Organization Business Master File Extract (EO BMF) includes cumulative information on exempt organizations. The data are extracted monthly and are available by state and region."
+
+```{r}
+# importing the Annual Extract of Tax-Exempt Organization Financial data and the Exempt Organizations Business Master File Extract data
+or_eobmf <- read_csv("https://www.irs.gov/pub/irs-soi/eo_or.csv", col_names = TRUE)
+head(or_eobmf)
+soi_990 <- read.delim("https://www.irs.gov/pub/irs-soi/15eofinextract990.dat.dat", header = TRUE, sep = "", skip = 0, as.is = TRUE)
+soi_990EZ <- read.delim("https://www.irs.gov/pub/irs-soi/15eofinextractEZ.dat", header = TRUE, sep = "", skip = 0, as.is = TRUE)
+soi_990PF <- read.delim("https://www.irs.gov/pub/irs-soi/15eofinextract990pf.dat", header = TRUE, sep = "", skip = 0, as.is = TRUE)
+```
+```{r}
+# selecting the needed columns from each dataset
+subset_990 <- select(soi_990, EIN,subseccd,noemplyeesw3cnt,noindiv100kcnt,totrevenue,totfuncexpns,netincfndrsng,lessdirfndrsng,grsincfndrsng,totassetsend,totliabend,totnetassetend)
+
+subset_990EZ <- select(soi_990EZ, EIN,subseccd,totrevnue,totexpns,totassetsend,totliabend,networthend)
+
+subset_990PF <- select(soi_990PF, EIN,SUBCD,TOTRCPTPERBKS,TOTEXPNSPBKS,TOTASSETSEND,TOTLIABEND,TFUNDNWORTH)
+```
+```{r}
+# renaming the columns into like column names
+colname_990 <- rename(subset_990, c("subseccd"="SUBSECTION_CODE", "noemplyeesw3cnt"="NUMBER_EMPLOYEES", "noindiv100kcnt"="NUMBER_EMPLOYEES100K", "totrevenue"="TOTAL_REVENUE","totfuncexpns"="TOTAL_EXPENSES", "netincfndrsng"="FUNDRAISING_INCOME", "lessdirfndrsng"="FUNDRAISING_EXPENSES", "grsincfndrsng"="GROSS_FUNDRAISING", "totassetsend"="TOTAL_ASSETS", "totliabend"="TOTAL_LIABILITIES", "totnetassetend"="NET_ASSETS")) 
+
+colname_990EZ <- rename(subset_990EZ, c("subseccd"="SUBSECTION_CODE", "totrevnue"="TOTAL_REVENUE", "totexpns"="TOTAL_EXPENSES", "totassetsend"="TOTAL_ASSETS", "totliabend"="TOTAL_LIABILITIES", "networthend"="NET_ASSETS"))
+
+colname_990PF <- rename(subset_990PF, c("SUBCD"="SUBSECTION_CODE", "TOTRCPTPERBKS"="TOTAL_REVENUE", "TOTEXPNSPBKS"="TOTAL_EXPENSES", "TOTASSETSEND"="TOTAL_ASSETS", "TOTLIABEND"="TOTAL_LIABILITIES", "TFUNDNWORTH"="NET_ASSETS"))
+```
+```{r}
+## ensure all three datasets have same columns. We will add new columns with values of NA. Then we can bind them. 
+## first create a vector of the columns to add
+add_likecol <- c("NUMBER_EMPLOYEES", "NUMBER_EMPLOYEES100K", "FUNDRAISING_INCOME", "FUNDRAISING_EXPENSES", "GROSS_FUNDRAISING")
+
+## add above columns to colname_990EZ, with values of NA
+colname_990EZ[add_likecol] <- NA
+
+## add above columns to colname_990PF, with values of NA
+colname_990PF[add_likecol] <- NA
+```
+```{r}
+## bind the three datasets together by first binding 990 and 990EZ, and second binding the outcome of the first with 990PF. This will give us out final soi dataframe.
+bind <- rbind(colname_990, colname_990EZ)
+soi_bind <- rbind(bind, colname_990PF)
+```
+```{r}
+## selecting which columns are wanted from the Oregon EOBMF dataset
+subset_or_eobmf <- select(or_eobmf, EIN, NAME, STREET, CITY, ZIP)
+```
+
+
+## Curating Data into a Dataset
+```{r}
+# merging the two data frames
+irsdfmerge <- merge(subset_or_eobmf,soi_bind, by = "EIN", all.x = TRUE, all.y = FALSE, sort = FALSE)
+# Finding out the structure of the merged data frame
+str(irsdfmerge)
+```
+
+
+## Geocoding the Dataset
+```{r}
+## Need to geocode the points to find the lat/lng using our variables "STREET", "CITY", "ZIP". (They are all in individual columns.)
+
+# our data merge includes ALL rows of the or_eobmf file, even if they do not have a merge. I want to make a merge without those files included.
+small_irsdfmerge <- merge(subset_or_eobmf,soi_bind, by = "EIN", all.x = FALSE, all.y = FALSE, sort = FALSE)
+```
+```{r}
+## create a new column to the dataset that combines the address variables
+small_irsdfmerge$ADDRESS <- with(small_irsdfmerge, paste0(STREET,", ", CITY, ", OR ", ZIP))
+head(small_irsdfmerge$ADDRESS)
+head(small_irsdfmerge)
+```
+```{r}
+## so that we can run the dataset through google maps during multiple sessions and bind the final datasets together, we have to split the dataset into pieces less than 2500. 
+subset1 <- small_irsdfmerge[1:2200,]
+subset2 <- small_irsdfmerge[2201:4400,]
+subset3 <- small_irsdfmerge[4401:6600,]
+subset4 <- small_irsdfmerge[6601:8685,]
+```
+```{r}
+## the geocoding function will not allow the input object to be a dataset$variable name. We need to create an object that refers to the ADDRESS column only for each subsets.
+ADDRESS1 <- subset1$ADDRESS
+ADDRESS2 <-subset2$ADDRESS
+ADDRESS3 <- subset3$ADDRESS
+ADDRESS4 <- subset4$ADDRESS
+```
+
+
+Note: this will need to be run 4 times, using the variables "subset1$ADDRESS", "subset2$ADDRESS", "subset3$ADDRESS", and "subset4$ADDRESS". The name of the file being saved also needs to be changed each time so that it can save automatically. This same chunk of code is copied 4 times, each reflecting one of the 4 subsets. 
+
+For subset1
+NOTE: EMILY RAN 5/18/17, FILE IN DRIVE AS "geocoding_output_subset1.csv"
+```{r}
+## use this function to geocode
+## get the input data
+infile <- "input"
+
+#define a function that will process googles server responses for us.
+getGeoDetails <- function(ADDRESS1){   
+   #use the gecode function to query google servers
+   geo_reply = geocode(ADDRESS1, output='all', messaging=TRUE, override_limit=TRUE)
+   #now extract the bits that we need from the returned list
+   answer <- data.frame(lat=NA, long=NA, accuracy=NA, formatted_address=NA, address_type=NA, status=NA)
+   answer$status <- geo_reply$status
+  
+    #if we are over the query limit - want to pause for an hour
+   while(geo_reply$status == "OVER_QUERY_LIMIT"){
+       print("OVER QUERY LIMIT - Pausing for 1 hour at:") 
+       time <- Sys.time()
+       print(as.character(time))
+       Sys.sleep(60*60)
+       geo_reply = geocode(address, output='all', messaging=TRUE, override_limit=TRUE)
+       answer$status <- geo_reply$status
+   }
+   #return Na's if we didn't get a match:
+   if (geo_reply$status != "OK"){
+       return(answer)
+   }   
+   #else, extract what we need from the Google server reply into a dataframe:
+   answer$lat <- geo_reply$results[[1]]$geometry$location$lat
+   answer$long <- geo_reply$results[[1]]$geometry$location$lng   
+   if (length(geo_reply$results[[1]]$types) > 0){
+       answer$accuracy <- geo_reply$results[[1]]$types[[1]]
+   }
+   answer$address_type <- paste(geo_reply$results[[1]]$types, collapse=',')
+   answer$formatted_address <- geo_reply$results[[1]]$formatted_address
+
+   return(answer)
+}
+
+#initialise a dataframe to hold the results
+geocoded <- data.frame()
+# find out where to start in the address list (if the script was interrupted before):
+startindex <- 1
+#if a temp file exists - load it up and count the rows!
+tempfilename <- paste0(infile, '_temp_geocoded.rds')
+if (file.exists(tempfilename)){
+       print("Found temp file - resuming from index:")
+       geocoded <- readRDS(tempfilename)
+       startindex <- nrow(geocoded)
+       print(startindex)
+}
+
+#initialise a dataframe to hold the results
+geocoded <- data.frame()
+
+# Start the geocoding process - address by address. geocode() function takes care of query speed limit.
+for (ii in seq(startindex, length(ADDRESS1))){
+   print(paste("Working on index", ii, "of", length(ADDRESS1)))
+   #query the google geocoder - this will pause here if we are over the limit.
+   result = getGeoDetails(ADDRESS1[ii]) 
+   print(result$status)     
+   result$index <- ii
+   #append the answer to the results file.
+   geocoded <- rbind(geocoded, result)
+}
+
+#now we add the latitude and longitude to the main data
+subset1$LAT <- geocoded$lat
+subset1$LONG <- geocoded$long
+subset1$ACCURACY <- geocoded$accuracy
+
+#finally write it all to the output files
+write.csv(subset1, file="geocoding_output_subset1.csv")
+```
+
+For subset2
+NOTE: EMILY RAN 5/22/17, FILE IN DRIVE AS "geocoding_output_subset2.csv"
+```{r}
+## use this function to geocode
+## get the input data
+infile <- "input"
+
+#define a function that will process googles server responses for us.
+getGeoDetails <- function(ADDRESS2){   
+   #use the gecode function to query google servers
+   geo_reply = geocode(ADDRESS2, output='all', messaging=TRUE, override_limit=TRUE)
+   #now extract the bits that we need from the returned list
+   answer <- data.frame(lat=NA, long=NA, accuracy=NA, formatted_address=NA, address_type=NA, status=NA)
+   answer$status <- geo_reply$status
+  
+    #if we are over the query limit - want to pause for an hour
+   while(geo_reply$status == "OVER_QUERY_LIMIT"){
+       print("OVER QUERY LIMIT - Pausing for 1 hour at:") 
+       time <- Sys.time()
+       print(as.character(time))
+       Sys.sleep(60*60)
+       geo_reply = geocode(address, output='all', messaging=TRUE, override_limit=TRUE)
+       answer$status <- geo_reply$status
+   }
+   #return Na's if we didn't get a match:
+   if (geo_reply$status != "OK"){
+       return(answer)
+   }   
+   #else, extract what we need from the Google server reply into a dataframe:
+   answer$lat <- geo_reply$results[[1]]$geometry$location$lat
+   answer$long <- geo_reply$results[[1]]$geometry$location$lng   
+   if (length(geo_reply$results[[1]]$types) > 0){
+       answer$accuracy <- geo_reply$results[[1]]$types[[1]]
+   }
+   answer$address_type <- paste(geo_reply$results[[1]]$types, collapse=',')
+   answer$formatted_address <- geo_reply$results[[1]]$formatted_address
+
+   return(answer)
+}
+
+#initialise a dataframe to hold the results
+geocoded <- data.frame()
+# find out where to start in the address list (if the script was interrupted before):
+startindex <- 1
+#if a temp file exists - load it up and count the rows!
+tempfilename <- paste0(infile, '_temp_geocoded.rds')
+if (file.exists(tempfilename)){
+       print("Found temp file - resuming from index:")
+       geocoded <- readRDS(tempfilename)
+       startindex <- nrow(geocoded)
+       print(startindex)
+}
+
+#initialise a dataframe to hold the results
+geocoded <- data.frame()
+
+# Start the geocoding process - address by address. geocode() function takes care of query speed limit.
+for (ii in seq(startindex, length(ADDRESS2))){
+   print(paste("Working on index", ii, "of", length(ADDRESS2)))
+   #query the google geocoder - this will pause here if we are over the limit.
+   result = getGeoDetails(ADDRESS2[ii]) 
+   print(result$status)     
+   result$index <- ii
+   #append the answer to the results file.
+   geocoded <- rbind(geocoded, result)
+}
+
+#now we add the latitude and longitude to the main data
+subset2$LAT <- geocoded$lat
+subset2$LONG <- geocoded$long
+subset2$ACCURACY <- geocoded$accuracy
+
+#finally write it all to the output files
+write.csv(subset2, file="geocoding_output_subset2.csv")
+```
+
+For subset3
+NOTE: ***** RAN 5/23/17, FILE IN DRIVE AS "geocoding_output_subset3.csv"
+```{r}
+## use this function to geocode
+## get the input data
+infile <- "input"
+
+#define a function that will process googles server responses for us.
+getGeoDetails <- function(ADDRESS3){   
+   #use the gecode function to query google servers
+   geo_reply = geocode(ADDRESS3, output='all', messaging=TRUE, override_limit=TRUE)
+   #now extract the bits that we need from the returned list
+   answer <- data.frame(lat=NA, long=NA, accuracy=NA, formatted_address=NA, address_type=NA, status=NA)
+   answer$status <- geo_reply$status
+  
+    #if we are over the query limit - want to pause for an hour
+   while(geo_reply$status == "OVER_QUERY_LIMIT"){
+       print("OVER QUERY LIMIT - Pausing for 1 hour at:") 
+       time <- Sys.time()
+       print(as.character(time))
+       Sys.sleep(60*60)
+       geo_reply = geocode(address, output='all', messaging=TRUE, override_limit=TRUE)
+       answer$status <- geo_reply$status
+   }
+   #return Na's if we didn't get a match:
+   if (geo_reply$status != "OK"){
+       return(answer)
+   }   
+   #else, extract what we need from the Google server reply into a dataframe:
+   answer$lat <- geo_reply$results[[1]]$geometry$location$lat
+   answer$long <- geo_reply$results[[1]]$geometry$location$lng   
+   if (length(geo_reply$results[[1]]$types) > 0){
+       answer$accuracy <- geo_reply$results[[1]]$types[[1]]
+   }
+   answer$address_type <- paste(geo_reply$results[[1]]$types, collapse=',')
+   answer$formatted_address <- geo_reply$results[[1]]$formatted_address
+
+   return(answer)
+}
+
+#initialise a dataframe to hold the results
+geocoded <- data.frame()
+# find out where to start in the address list (if the script was interrupted before):
+startindex <- 1
+#if a temp file exists - load it up and count the rows!
+tempfilename <- paste0(infile, '_temp_geocoded.rds')
+if (file.exists(tempfilename)){
+       print("Found temp file - resuming from index:")
+       geocoded <- readRDS(tempfilename)
+       startindex <- nrow(geocoded)
+       print(startindex)
+}
+
+#initialise a dataframe to hold the results
+geocoded <- data.frame()
+
+# Start the geocoding process - address by address. geocode() function takes care of query speed limit.
+for (ii in seq(startindex, length(ADDRESS3))){
+   print(paste("Working on index", ii, "of", length(ADDRESS3)))
+   #query the google geocoder - this will pause here if we are over the limit.
+   result = getGeoDetails(ADDRESS3[ii]) 
+   print(result$status)     
+   result$index <- ii
+   #append the answer to the results file.
+   geocoded <- rbind(geocoded, result)
+}
+
+#now we add the latitude and longitude to the main data
+subset3$LAT <- geocoded$lat
+subset3$LONG <- geocoded$long
+subset3$ACCURACY <- geocoded$accuracy
+
+#finally write it all to the output files
+write.csv(subset3, file="geocoding_output_subset3.csv")
+```
+
+For subset4
+NOTE: EMILY RAN 5/29/17, FILE IN DRIVE AS "geocoding_output_subset4.csv"
+```{r}
+## use this function to geocode
+## get the input data
+infile <- "input"
+
+#define a function that will process googles server responses for us.
+getGeoDetails <- function(ADDRESS4){   
+   #use the gecode function to query google servers
+   geo_reply = geocode(ADDRESS4, output='all', messaging=TRUE, override_limit=TRUE)
+   #now extract the bits that we need from the returned list
+   answer <- data.frame(lat=NA, long=NA, accuracy=NA, formatted_address=NA, address_type=NA, status=NA)
+   answer$status <- geo_reply$status
+  
+    #if we are over the query limit - want to pause for an hour
+   while(geo_reply$status == "OVER_QUERY_LIMIT"){
+       print("OVER QUERY LIMIT - Pausing for 1 hour at:") 
+       time <- Sys.time()
+       print(as.character(time))
+       Sys.sleep(60*60)
+       geo_reply = geocode(address, output='all', messaging=TRUE, override_limit=TRUE)
+       answer$status <- geo_reply$status
+   }
+   #return Na's if we didn't get a match:
+   if (geo_reply$status != "OK"){
+       return(answer)
+   }   
+   #else, extract what we need from the Google server reply into a dataframe:
+   answer$lat <- geo_reply$results[[1]]$geometry$location$lat
+   answer$long <- geo_reply$results[[1]]$geometry$location$lng   
+   if (length(geo_reply$results[[1]]$types) > 0){
+       answer$accuracy <- geo_reply$results[[1]]$types[[1]]
+   }
+   answer$address_type <- paste(geo_reply$results[[1]]$types, collapse=',')
+   answer$formatted_address <- geo_reply$results[[1]]$formatted_address
+
+   return(answer)
+}
+
+#initialise a dataframe to hold the results
+geocoded <- data.frame()
+# find out where to start in the address list (if the script was interrupted before):
+startindex <- 1
+#if a temp file exists - load it up and count the rows!
+tempfilename <- paste0(infile, '_temp_geocoded.rds')
+if (file.exists(tempfilename)){
+       print("Found temp file - resuming from index:")
+       geocoded <- readRDS(tempfilename)
+       startindex <- nrow(geocoded)
+       print(startindex)
+}
+
+#initialise a dataframe to hold the results
+geocoded <- data.frame()
+
+# Start the geocoding process - address by address. geocode() function takes care of query speed limit.
+for (ii in seq(startindex, length(ADDRESS4))){
+   print(paste("Working on index", ii, "of", length(ADDRESS4)))
+   #query the google geocoder - this will pause here if we are over the limit.
+   result = getGeoDetails(ADDRESS4[ii]) 
+   print(result$status)     
+   result$index <- ii
+   #append the answer to the results file.
+   geocoded <- rbind(geocoded, result)
+}
+
+#now we add the latitude and longitude to the main data
+subset4$LAT <- geocoded$lat
+subset4$LONG <- geocoded$long
+subset4$ACCURACY <- geocoded$accuracy
+
+#finally write it all to the output files
+write.csv(subset4, file="geocoding_output_subset4.csv")
+```
+
+Now that we have the geocoed files, the 4 need to be imported and then binded into one dataframe
+```{r}
+## import the 4 subsection files with the geocoded lat/long
+subset1_lat.lng <- read.csv("geocoding_output_subset1.csv", header = TRUE)
+subset2_lat.lng <- read.csv("geocoding_output_subset2.csv", header = TRUE)
+subset3_lat.lng <- read.csv("geocoding_output_subset3.csv", header= TRUE)
+subset4_lat.lng <- read.csv("geocoding_output_subset4.csv", header = TRUE)
+```
+```{r}
+## bind the 4 above objects into one
+first_bind <- rbind(subset1_lat.lng, subset2_lat.lng)
+second_bind <- rbind(subset3_lat.lng, subset4_lat.lng)
+final_small_irsdfmerge <- rbind(first_bind, second_bind)
+```
+
+
+## Add County Data to Dataset
+```{r}
+## Import the 2010 Census Zip Code Tabulation Areas (ZCTAs) from https://www.census.gov/geo/maps-data/data/zcta_rel_download.html. This uses county FIPS codes.
+ZCTA <- read_csv("http://www2.census.gov/geo/docs/maps-data/data/rel/zcta_county_rel_10.txt",col_names = TRUE)
+
+## select the columns needed 
+ZCTA <- select(ZCTA, ZCTA5, STATE, COUNTY)
+
+## rename the columns 
+ZCTA <- rename(ZCTA, c("STATE"="STATE_FIPS", "COUNTY"="COUNTY_FIPS"))
+
+## subset the ZCTA data to remove all states but OR
+ZCTA <- ZCTA[(ZCTA$STATE_FIPS==41),]
+```
+```{r}
+## Import the 2010 FIPS codes for Counties and County Equivalent Entities from https://www.census.gov/geo/reference/codes/cou.html. 
+FIPS <- read_csv("https://www2.census.gov/geo/docs/reference/codes/files/st41_or_cou.txt", col_names = FALSE)
+
+## select the columns needed
+FIPS <- select(FIPS, X3, X4)
+
+## give header names for legibility 
+FIPS <- rename(FIPS, c("X3"="COUNTY_FIPS", "X4"="COUNTY"))
+```
+```{r}
+## then merge the OR only ZCTA and FIPS to get the zip codes by county (for OR only)
+ZIP_COUNTY <- merge(ZCTA, FIPS, by= "COUNTY_FIPS", all = TRUE, sort = FALSE)
+
+## combine rows with the same zip code, giving two county outputs
+ZIP_COUNTY <- ddply(ZIP_COUNTY, .(ZCTA5,STATE_FIPS), summarize, COUNTY_FIPS = toString(COUNTY_FIPS), COUNTY = toString(COUNTY))
+```
+```{r}
+## split the county column into seperate columns for each county 
+ZIP_COUNTY <- cSplit(ZIP_COUNTY, "COUNTY", sep=",")
+```
+
+```{r}
+## our final_small_irsdfmerge gives zip codes in long form. We only need the 5 digits before the - and cannot merge them with our ZIP_COUNTY data until they are of consistent values. 
+## split the ZIP column into two columns, using the - as the delimeter
+final_small_irsdfmerge <- separate(final_small_irsdfmerge, ZIP, c("ZIP", "ZIP.y"), "-", remove = TRUE)
+## remove the unnecessary zip.y
+final_small_irsdfmerge$ZIP.y <- NULL
+```
+```{r}
+## merge the final dataset with county data by the Zip code
+final_small_irsdfmerge <- merge(final_small_irsdfmerge, ZIP_COUNTY, by.x = "ZIP", by.y = "ZCTA5", all.x = TRUE, all.y = FALSE, sort = FALSE)
+
+## reorder columns in final dataset
+final_small_irsdfmerge <- final_small_irsdfmerge[c("EIN", "NAME", "STREET", "CITY", "ZIP", "COUNTY_1", "COUNTY_2", "COUNTY_3", "SUBSECTION_CODE", "NUMBER_EMPLOYEES", "NUMBER_EMPLOYEES100K", "TOTAL_REVENUE", "TOTAL_EXPENSES", "FUNDRAISING_INCOME", "FUNDRAISING_EXPENSES", "GROSS_FUNDRAISING", "TOTAL_ASSETS", "TOTAL_LIABILITIES", "NET_ASSETS", "LAT", "LONG", "ACCURACY", "ADDRESS", "STATE_FIPS", "COUNTY_FIPS")]
+
+## order rows alphabetical by column NAME
+final_small_irsdfmerge <- final_small_irsdfmerge[order(final_small_irsdfmerge$NAME),]
+```
+
+
+## Export our Final Dataset
+```{r}
+write.csv(final_small_irsdfmerge, file = "final_small_irsdfmerge.csv")
+```
+
+## Import dataset
+```{r}
+## from now on, this dataset can be imported to avoid running all above code
+final_small_irsdfmerge <- read.csv("final_small_irsdfmerge.csv", header = TRUE)
+```
+
+
+## Create a Leaflet Map of OR State
+```{r}
+map <- leaflet() %>%
+  setView(lng = -120.5542, lat = 43.9041, zoom = 7)
+```
+```{r}
+## default is using open street maps
+map %>% addTiles()
+```
+```{r}
+## very basic black and white map
+map %>% addProviderTiles(providers$CartoDB.Positron)
+```
+```{r}
+## basic topo map
+map %>% addProviderTiles(providers$Esri.WorldTopoMap)
+```
+```{r}
+## plots markers for the 100 organizations
+leaflet(final_small_irsdfmerge) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addMarkers(~LONG, ~LAT, popup = ~as.character(NAME), label = ~as.character(NAME))
+```
+
+
+
+## Create the ShinyApp UI
+Attempt 1: not fully working
+```{r}
+# Define UI for application
+ui <- fluidPage(
+  titlePanel("Filter Options"),
+  sidebarLayout(
+    sidebarPanel(
+      ## text search box
+#      textInput("text",
+#                "Search",
+#                value = "Enter text..."),
+      ## drop down for location by county 
+#      selectInput("COUNTY",
+#                  "County",
+#                  choices = c("Baker", "Benton", "Clackamas", "Clatsop", "Columbia", "Coos", "Crook", "Curry", "Deschutes", "Douglas", "Gilliam", "Grant", "Harney", "Hood River", "Jackson", "Jefferson", "Josephine", "Klamath", "Lake", "Lane", "Lincoln", "Linn", "Malheur", "Marion", "Morrow", "Multnomah", "Polk", "Sherman", "Tillamook", "Umatilla", "Union", "Wallowa", "Wasco", "Washington", "Wheeler", "Yamhil"),
+#                  multiple = TRUE),
+      ## checkbox for subsection code
+#      checkboxGroupInput("SUBSECTION_CODE",
+#                  "Subsection Code",
+#                  choices = list("1"=1,"2"=2, "3"=3, "4"=4, "5"=5, "6"=6, "7"=7, "9"=9, "10"=10, "11"=11, "12"=12, "13"=13, "14"=14, "15"=15, "16"=16, "17"=17, "18"=18, "19"=19, "21"=21, "22"=22, "23"=23, "25"=25, "26"=26, "27"=27, "28"=28, "92"=92)),
+      ## slider for number of employees
+      sliderInput("NUMBER_EMPLOYEES",
+                  "Number of Employees",
+                  min = 0,
+                  max = 66570,
+                  value = c(0, 66570))
+      ## slider for number of employees over 100K/year
+#      sliderInput("NUMBER_EMPLOYEES100K",
+#                  "Number of Employees over $100k/year",
+#                  min = 0,
+#                  max = 25007,
+#                  value = c(0, 25007)),
+      ## slider for total revenue
+#      sliderInput("TOTAL_REVENUE",
+#                  "Total Revenue",
+#                  min = -5773000, 
+#                  max = 45410000000,
+#                  value = c(-5773000, 45410000000)),
+      ## slider for total expenses
+#      sliderInput("TOTAL_EXPENSES",
+#                  "Total Expenses",
+#                  min = -1030000, 
+#                  max = 45030000000,
+#                  value = c(-1030000, 45030000000)),
+       ## slider for fundraising income
+#      sliderInput("FUNDRAISING_INCOME",
+#                  "Fundraising Income",
+#                  min = -635799, 
+#                  max = 1191957,
+#                  value = c(-635799, 1191957)),
+      ## slider for fundraising expenses
+#      sliderInput("FUNDRAISING_EXPENSES",
+#                  "Fundraising Expenses",
+#                  min = 0, 
+#                  max = 2324883,
+#                  value = c(0, 2324883)),
+      ## slider for gross fundraising
+#      sliderInput("GROSS_FUNDRAISING",
+#                  "Gross Fundraising",
+#                  min = 0, 
+#                  max = 2633029,
+#                  value = c(0, 2633029)),
+      ## slider for total assets
+#      sliderInput("TOTAL_ASSETS",
+#                  "Total Assets",
+#                  min = -9170, 
+#                  max = 42840000000,
+#                  value = c(-9170, 42840000000)),
+      ## slider for total liabilities
+#      sliderInput("TOTAL_LIABILITIES",
+#                  "Total Liabilities",
+#                  min = -89000, 
+#                  max = 26430000000,
+#                  value = c(-89000, 26430000000)),
+      ## slider for net assets
+#      sliderInput("NET_ASSETS",
+#                  "Net Assets",
+#                  min = -463500000, 
+#                  max = 16410000000,
+#                  value = c(-463500000, 16410000000))
+    ),
+    mainPanel(
+      leafletOutput("map", "100%", 650),
+      "Text can go here",
+      br(),
+      plotOutput("results")
+    )
+  )
+)
+
+server <- function(input, output, session) {
+   filteredData <- reactive({
+       final_small_irsdfmerge %>%
+       filter(#COUNTY_NAME == input$COUNTY_NAME,
+              #SUBSECTION_CODE >= input$SUBSECTION_CODE[1],
+              #SUBSECTION_CODE <= input$SUBSECTION_CODE[2],
+              NUMBER_EMPLOYEES >= input$NUMBER_EMPLOYEES[1],
+              NUMBER_EMPLOYEES <= input$NUMBER_EMPLOYEES[2])
+   }) 
+  output$map <- renderLeaflet({
+    leaflet(final_small_irsdfmerge) %>%
+      setView(lng = -120.5542, lat = 43.9041, zoom = 7) %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      addMarkers(~(LONG), ~(LAT), popup = ~as.character(NAME), label = ~as.character(NAME))
+  })
+ 
+#output$results <- renderTable({
+#    filteredData()
+#  })
+}
+
+shinyApp(ui,server)
+```
+
+
+Attempt 2: currently not giving an output
+```{r}
+ui <- bootstrapPage(
+  tags$style(type = "text/css", "html, body {width:100%;height:100%}"),
+  leafletOutput("map", width = "100%", height = "100%"),
+  titlePanel("Filter Options"),
+  sidebarLayout(
+    sidebarPanel(
+      ## slider for number of employees
+      sliderInput("NUMBER_EMPLOYEES",
+                  "Number of Employees",
+                  min(final_small_irsdfmerge$NUMBER_EMPLOYEES),
+                  max(final_small_irsdfmerge$NUMBER_EMPLOYEES),
+                  value = range(final_small_irsdfmerge$NUMBER_EMPLOYEES), 
+                  step = 1)
+    ),
+    mainPanel(
+      leafletOutput("map", "100%", 650),
+      "Text can go here",
+      br(),
+      plotOutput("results")
+    )
+  )
+)
+
+
+server <- function(input, output, session) {
+  ## reactive expression for the data subsetted for what the user selected
+  filteredData <- reactive({
+    final_small_irsdfmerge[final_small_irsdfmerge$NUMBER_EMPLOYEES >= input$NUMBER_EMPLOYEES[1] & final_small_irsdfmerge$NUMBER_EMPLOYEES <= input$NUMBER_EMPLOYEES[2],]
+  })
+  
+  ## plot static map
+  output$map <- renderLeaflet({
+    leaflet(final_small_irsdfmerge) %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      fitBounds(~min(LONG), ~min(LAT), ~max(LONG), ~max(LAT))
+  })
+  
+  ## plot markers by subsection code
+  observe({
+   if (nrow(filteredData()) == 0) {leafletProxy("map") %>%
+       clearShapes()}
+    else {
+      leafletProxy("map") %>%
+        clearShapes() %>%
+          addMarkers(filteredData()$LONG,
+                     filteredData()$LAT,
+                     popup = ~as.character(NAME),
+                     label = ~as.character(NAME))}
+  })
+}
+
+
+shinyApp(server, ui)
+```
+
+
+Attempt 3: not fully working
+```{r}
+ui <- fluidPage(
+  leafletOutput("map"),
+  p(),
+  sliderInput("NUMBER_EMPLOYEES",
+                  "Number of Employees",
+                  min(final_small_irsdfmerge$NUMBER_EMPLOYEES),
+                  max(final_small_irsdfmerge$NUMBER_EMPLOYEES),
+                  value = range(final_small_irsdfmerge$NUMBER_EMPLOYEES), 
+                  step = 1)
+)
+
+server <- function(input, output, session) {
+  points <- eventReactive(input$NUMBER_EMPLOYEES, {
+    final_small_irsdfmerge[final_small_irsdfmerge$NUMBER_EMPLOYEES >= input$NUMBER_EMPLOYEES[1] & final_small_irsdfmerge$NUMBER_EMPLOYEES <= input$NUMBER_EMPLOYEES[2],]
+    })
+  
+  output$map <- renderLeaflet({
+    leaflet() %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      fitBounds(~min(LONG), ~min(LAT), ~max(LONG), ~max(LAT)) %>%
+      addMarkers(data = points())
+  })
+}
+
+shinyApp(ui, server)
+```
+
+
+Attempt 4: Following Jonathan's app.R document, but not fully working
+```{r}
+ui <- fluidPage(
+  # Application title
+  titlePanel("Nonprofit Index"),
+  textInput("text",
+            "Search",
+            value = "Enter text..."),
+  leafletOutput("")
+)
+
+server <- function(input, output) {
+  
+  library(sp)
+  library(stringr)
+  
+  coords <- cbind(final_small_irsdfmerge$LONG, final_small_irsdfmerge$LAT)
+  
+  sp_nonprofits <- SpatialPointsDataFrame(coords = coords, data = final_small_irsdfmerge)
+  
+  points <- eventReactive(input$text, {
+    if(!nchar(input$text)==0){
+  pointsearch <- str_detect(string = sp_nonprofits$NAME, pattern = as.character(input$text))
+  newpoints <- sp_nonprofits[pointssearch,]
+  print(as.character(input$text))
+  return(filter_points)}
+    else{
+      return(sp_nonprofits)
+      }
+  })
+  
+  output$map <-renderLeaflet({
+    leaflet()%>% addTiles()%>% addMarkers(data = sp_nonprofits, lng=~LONG, lat=~LAT, popup=~NAME)})
+  
+
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
+```
+
+
+Attempt 5: not fully working
+```{r}
+ui <- fluidPage(
+  titlePanel("Filter Options"),
+  sidebarLayout(
+    sidebarPanel(
+      ## text search box
+      textInput("text",
+                "Search",
+                value = "Enter text..."),
+      ## drop down for location by county 
+      selectInput("COUNTY",
+                  "County",
+                  choices = c("Baker", "Benton", "Clackamas", "Clatsop", "Columbia", "Coos", "Crook", "Curry", "Deschutes", "Douglas", "Gilliam", "Grant", "Harney", "Hood River", "Jackson", "Jefferson", "Josephine", "Klamath", "Lake", "Lane", "Lincoln", "Linn", "Malheur", "Marion", "Morrow", "Multnomah", "Polk", "Sherman", "Tillamook", "Umatilla", "Union", "Wallowa", "Wasco", "Washington", "Wheeler", "Yamhil"),
+                  multiple = TRUE),
+      ## checkboxes to filter for subsection code
+#      checkboxGroupInput("SUBSECTION_CODE",
+#                  "Subsection Code",
+#                  choices = list("1"=1,"2"=2, "3"=3, "4"=4, "5"=5, "6"=6, "7"=7, "9"=9, "10"=10, "11"=11, "12"=12, "13"=13, "14"=14, "15"=15, "16"=16, "17"=17, "18"=18, "19"=19, "21"=21, "22"=22, "23"=23, "25"=25, "26"=26, "27"=27, "28"=28, "92"=92)),
+      ## slider to filter for number of employees
+      sliderInput("NUMBER_EMPLOYEES",
+                  "Number of Employees",
+                  min = 0,
+                  max = 66570,
+                  value = c(0, 66570)),
+       ## slider to filter for number of employees over 100K/year
+      sliderInput("NUMBER_EMPLOYEES100K",
+                  "Number of Employees over $100k/year",
+                  min = 0,
+                  max = 25007,
+                  value = c(0, 25007)),
+      ## slider to filter for total revenue
+      sliderInput("TOTAL_REVENUE",
+                  "Total Revenue",
+                  min = 0, 
+                  max = 1000000,
+                  value = c(0, 1000000))
+    ),
+     mainPanel(
+      leafletOutput("map", "100%", 650),
+      "Text can go here",
+      br(),
+      plotOutput("results")
+    )
+  )
+)
+
+
+server <- function(input, output, session) {
+  filteredData <- eventReactive(
+    input$TOTAL_REVENUE, {
+      final_small_irsdfmerge[final_small_irsdfmerge$TOTAL_REVENUE >= input$TOTAL_REVENUE[1] & final_small_irsdfmerge$TOTAL_REVENUE <= input$TOTAL_REVENUE[2],]
+    })
+
+  output$map <- renderLeaflet({
+    leaflet(final_small_irsdfmerge) %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      setView(lng = -120.5542, lat = 43.9041, zoom = 7) %>%
+      addCircleMarkers(data = filteredData(), radius = 2, opacity = 0.5, fill = TRUE, color = "green", popup = ~as.character(NAME), label = ~as.character(NAME), clusterOptions = markerClusterOptions())
+  })
+}
+
+shinyApp(ui, server)
+```
+
+
+
+Attempt 6: most working version but not giving correct output according to data. (For example, when multiple inputs are selected, such as a second county, results decrease when they should increase.)
+```{r}
+ui <- fluidPage(
+  titlePanel("Filter Options"),
+  sidebarLayout(
+    sidebarPanel(
+      ## text search box
+#      textInput("SEARCH",
+#                "Search by Name",
+#                value = "",
+#                placeholder = "Enter text..."),
+      ## drop down to filter for location by county 
+      selectInput("COUNTY",
+                  "County",
+                  choices = c("Baker County", "Benton County", "Clackamas County", "Clatsop County", "Columbia County", "Coos County", "Crook County", "Curry County", "Deschutes County", "Douglas County", "Gilliam County", "Grant County", "Harney County", "Hood River County", "Jackson County", "Jefferson County", "Josephine County", "Klamath County", "Lake County", "Lane County", "Lincoln County", "Linn County", "Malheur County", "Marion County", "Morrow County", "Multnomah County", "Polk County", "Sherman County", "Tillamook County", "Umatilla County", "Union County", "Wallowa County", "Wasco County", "Washington County", "Wheeler County", "Yamhil County"),
+                  selected = "",
+                  multiple = TRUE),
+      ## drop down to filter for subsection code
+      selectInput("SUBSECTION_CODE",
+                  "Subsection Code",
+                  choices = final_small_irsdfmerge$SUBSECTION_CODE,
+                  selected = 3,
+                  multiple = TRUE),
+      ## slider to filter for number of employees
+      sliderInput("NUMBER_EMPLOYEES",
+                  "Number of Employees",
+                  min = 0,
+                  max = 66570,
+                  value = c(0, 66570)),
+       ## slider to filter for number of employees over 100K/year
+      sliderInput("NUMBER_EMPLOYEES100K",
+                  "Number of Employees over $100k/year",
+                  min = 0,
+                  max = 25007,
+                  value = c(0, 25007)),
+      ## slider to filter for total revenue
+      sliderInput("TOTAL_REVENUE",
+                  "Total Revenue",
+                  min = -5773000, 
+                  max = 45410000000,
+                  value = c(-5773000, 45410000000)),
+      ## slider to filter for total expenses
+      sliderInput("TOTAL_EXPENSES",
+                  "Total Expenses",
+                  min = -1030000, 
+                  max = 45030000000,
+                  value = c(-1030000, 45030000000)),
+      ## slider to filter for fundraising income
+      sliderInput("FUNDRAISING_INCOME",
+                  "Fundraising Income",
+                  min = -635799,
+                  max = 1191957,
+                  value = c(-635799, 1191957)),
+      ## slider to filter for fundraising expenses
+      sliderInput("FUNDRAISING_EXPENSES",
+                  "Fundraising Expenses",
+                  min = 0,
+                  max = 2324883,
+                  value = c(0, 2324883)),
+      ## slider to filter for gross fundraising
+      sliderInput("GROSS_FUNDRAISING",
+                  "Gross Fundraising",
+                  min = 0,
+                  max = 2633029, 
+                  value = c(0, 2633029)),
+      ## slider to filter for total assets
+      sliderInput("TOTAL_ASSETS",
+                  "Total Assets",
+                  min = -9170, 
+                  max = 42840000000,
+                  value = c(-9170, 42840000000)),
+      ## slider to filter for total liabilities
+      sliderInput("TOTAL_LIABILITIES",
+                  "Total Liabilities",
+                  min = -89000,
+                  max = 26430000000,
+                  value = c(-89000, 26430000000)),
+      ## slider to filter for net assets
+      sliderInput("NET_ASSETS",
+                  "Net Assets",
+                  min = -463500000,
+                  max = 16410000000,
+                  value = c(-463500000, 16410000000))
+
+    ),
+     mainPanel(
+      leafletOutput("map", "100%", 650),
+      "Text can go here",
+      br(),
+      plotOutput("results")
+    )
+  )
+)
+
+
+server <- function(input, output, session) {
+  filteredData <- reactive({
+    newData <- final_small_irsdfmerge[#if(is.null(input$SEARCH)){return(final_small_irsdfmerge)} else(final_small_irsdfmerge$NAME == input$SEARCH) &
+                                        (final_small_irsdfmerge$COUNTY_1 == input$COUNTY |
+                                        final_small_irsdfmerge$COUNTY_2 == input$COUNTY |
+                                        final_small_irsdfmerge$COUNTY_3 == input$COUNTY) &
+                                        final_small_irsdfmerge$SUBSECTION_CODE == input$SUBSECTION_CODE &
+                                        final_small_irsdfmerge$NUMBER_EMPLOYEES >= input$NUMBER_EMPLOYEES[1] &
+                                        final_small_irsdfmerge$NUMBER_EMPLOYEES <= input$NUMBER_EMPLOYEES[2] &
+                                        final_small_irsdfmerge$NUMBER_EMPLOYEES100K >= input$NUMBER_EMPLOYEES100K[1] &
+                                        final_small_irsdfmerge$NUMBER_EMPLOYEES100K <= input$NUMBER_EMPLOYEES100K[2] &
+                                        final_small_irsdfmerge$TOTAL_REVENUE >= input$TOTAL_REVENUE[1] & 
+                                        final_small_irsdfmerge$TOTAL_REVENUE <= input$TOTAL_REVENUE[2] &
+                                        final_small_irsdfmerge$TOTAL_EXPENSES >= input$TOTAL_EXPENSES[1] &
+                                        final_small_irsdfmerge$TOTAL_EXPENSES <= input$TOTAL_EXPENSES[2] &
+                                        final_small_irsdfmerge$FUNDRAISING_INCOME >= input$FUNDRAISING_INCOME[1] &
+                                        final_small_irsdfmerge$FUNDRAISING_INCOME <= input$FUNDRAISING_INCOME[2] &
+                                        final_small_irsdfmerge$FUNDRAISING_EXPENSES >= input$FUNDRAISING_EXPENSES[1] &
+                                        final_small_irsdfmerge$FUNDRAISING_EXPENSES <= input$FUNDRAISING_EXPENSES[2] &
+                                        final_small_irsdfmerge$GROSS_FUNDRAISING >= input$GROSS_FUNDRAISING[1] &
+                                        final_small_irsdfmerge$GROSS_FUNDRAISING <= input$GROSS_FUNDRAISING[2] &
+                                        final_small_irsdfmerge$TOTAL_ASSETS >= input$TOTAL_ASSETS[1] &
+                                        final_small_irsdfmerge$TOTAL_ASSETS <= input$TOTAL_ASSETS[2] &
+                                        final_small_irsdfmerge$TOTAL_LIABILITIES >= input$TOTAL_LIABILITIES[1] &
+                                        final_small_irsdfmerge$TOTAL_LIABILITIES <= input$TOTAL_LIABILITIES[2] &
+                                        final_small_irsdfmerge$NET_ASSETS >= input$NET_ASSETS[1] &
+                                        final_small_irsdfmerge$NET_ASSETS <= input$NET_ASSETS[2],]
+  })
+  
+  output$map <- renderLeaflet({
+    leaflet(final_small_irsdfmerge) %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      setView(lng = -120.5542, lat = 43.9041, zoom = 7) %>%
+      addMarkers(data = filteredData(), popup = ~as.character(NAME), label = ~as.character(NAME), clusterOptions = markerClusterOptions())
+  })
+  
+  
+}
+
+shinyApp(ui, server)
+```
+
+
+Attempt 7: opens and closes 
+```{r}
+ui <- bootstrapPage(
+  tags$style(type = "text/css", "html, body {width:100%;height:100%}"),
+  leafletOutput("map", width = "100%", height = "100%"),
+  absolutePanel(top = 10, right = 10,
+                ## slider to filter for number of employees
+                sliderInput("NUMBER_EMPLOYEES",
+                            "Number of Employees",
+                            min = 0,
+                            max = 66570,
+                            value = c(0, 66570)
+                ),
+                ## drop down to filter for subsection code
+                selectInput("SUBSECTION_CODE",
+                            "Subsection Code",
+                            choices = final_small_irsdfmerge$SUBSECTION_CODE,
+                            selected = 3,
+                            multiple = TRUE
+                )
+  )       
+)
+
+server <- function(input, output, session){
+  ## reactive expression for the data subsetted to what the user selected
+  filteredData <- reactive({
+    df <- final_small_irsdfmerge[final_small_irsdfmerge$NUMBER_EMPLOYEES >= input$NUMBER_EMPLOYEES[1] & final_small_irsdfmerge$NUMBER_EMPLOYEES <= input$NUMBER_EMPLOYEES[2],]
+    return(df)
+  })
+  
+  filteredCodeData <- reactive({
+    df <- final_small_irsdfmerge[final_small_irsdfmerge$SUBSECTION_CODE == input$SUBSECTION_CODE]
+    return(df)
+  })
+  
+  
+  output$map <- renderLeaflet({
+    leaflet() %>% addProviderTiles(providers$CartoDB.Positron) %>% 
+      setView(lng = -120.5542, lat = 43.9041, zoom = 7)
+  })
+  
+  observe({
+    if(nrow(filteredCodeData()) == 0) {leafletProxy("map") %>% clearShapes()}
+       else{
+         leafletProxy("map") %>%
+           clearShapes() %>%
+           addCircles(filteredCodeData()$LONG,
+                      filteredCodeData()$LAT,
+                      color = "black")}
+  })
+  
+  observe({
+    if(nrow(filteredData()) == 0) {leafletProxy("map") %>% clearShapes()}
+    else{
+      leafletProxy("map") %>%
+        clearShapes() %>%
+        addCircles(filteredData()$LONG,
+                   filteredData()$LAT,
+                   weight = 1,
+                   color = "red") }
+  })
+    
+}
+
+shinyApp(ui, server)
+```
+
+
+Attempt 8: 
+```{r}
+
+```
+
+
+```{r}
+summary(final_small_irsdfmerge)
+```
+
+
+
